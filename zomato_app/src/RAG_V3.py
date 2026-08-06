@@ -141,15 +141,18 @@ def build_index():
     from llama_index.vector_stores.chroma import ChromaVectorStore
     from llama_index.core.node_parser import SentenceSplitter
     from llama_index.llms.openai_like import OpenAILike
-    from llama_index.embeddings.fastembed import FastEmbedEmbedding
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     if not GROQ_API_KEY:
         print("ERROR: GROQ_API_KEY environment variable is missing.")
         return None
 
-    # Global Settings Setup (Lightweight FastEmbed)
-    Settings.embed_model = FastEmbedEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    # Lightweight HuggingFaceEmbedding configuration inside function
+    Settings.embed_model = HuggingFaceEmbedding(
+        model_name="BAAI/bge-small-en-v1.5",
+        embed_batch_size=32,
+    )
     Settings.llm = OpenAILike(
         model="llama-3.1-8b-instant",
         api_base="https://api.groq.com/openai/v1",
@@ -161,7 +164,7 @@ def build_index():
 
     chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
-    # Return existing index if available and REBUILD_INDEX is False
+    # Return existing index if available
     if not REBUILD_INDEX:
         try:
             chroma_collection = chroma_client.get_collection(COLLECTION_NAME)
