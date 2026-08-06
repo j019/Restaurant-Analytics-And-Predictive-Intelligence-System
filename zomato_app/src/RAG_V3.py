@@ -145,76 +145,75 @@ def build_index():
 
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     if not GROQ_API_KEY:
-        print("ERROR: GROQ_API_KEY environment variable is missing.")
+        print("ERROR: GROQ_API_KEY environment variable is not set on Render.")
         return None
 
-    # Lightweight HuggingFaceEmbedding configuration inside function
-    Settings.embed_model = HuggingFaceEmbedding(
-        model_name="BAAI/bge-small-en-v1.5",
-        embed_batch_size=32,
-    )
-    Settings.llm = OpenAILike(
-        model="llama-3.1-8b-instant",
-        api_base="https://api.groq.com/openai/v1",
-        api_key=GROQ_API_KEY,
-        is_chat_model=True,
-        context_window=131072,
-        max_tokens=512,
-    )
-
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-
-    # Return existing index if available
-    if not REBUILD_INDEX:
-        try:
-            chroma_collection = chroma_client.get_collection(COLLECTION_NAME)
-            if chroma_collection.count() > 0:
-                print(f"Loading existing Chroma collection '{COLLECTION_NAME}' ({chroma_collection.count()} docs)...")
-                vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-                return VectorStoreIndex.from_vector_store(vector_store)
-        except Exception:
-            pass
-
-    # Build Index from CSV
-    print(f"Building fresh vector index from {CSV_PATH}...")
-    needed_cols = set(COLUMN_MAP.values())
-    
     try:
-        df = pd.read_csv(
-            CSV_PATH, 
-            compression='gzip' if CSV_PATH.endswith('.gz') else None,
-            usecols=lambda c: c in needed_cols
+        # Lightweight embedding configuration
+        Settings.embed_model = HuggingFaceEmbedding(
+            model_name="BAAI/bge-small-en-v1.5",
+            embed_batch_size=16,
         )
-    except Exception:
-        df = pd.read_csv(CSV_PATH)
+        Settings.llm = OpenAILike(
+            model="llama-3.1-8b-instant",
+            api_base="https://api.groq.com/openai/v1",
+            api_key=GROQ_API_KEY,
+            is_chat_model=True,
+            context_window=131072,
+            max_tokens=512,
+        )
 
-    if SAMPLE_SIZE and len(df) > SAMPLE_SIZE:
-        df = df.sample(n=SAMPLE_SIZE, random_state=42).reset_index(drop=True)
+        chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
-    name_col = COLUMN_MAP["name"]
-    if name_col in df.columns:
-        df = df.dropna(subset=[name_col]).reset_index(drop=True)
+        # Return existing index if available
+        if not REBUILD_INDEX:
+            try:
+                chroma_collection = chroma_client.get_collection(COLLECTION_NAME)
+                if chroma_collection.count() > 0:
+                    print(f"Loading existing Chroma collection '{COLLECTION_NAME}' ({chroma_collection.count()} docs)...")
+                    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+                    return VectorStoreIndex.from_vector_store(vector_store)
+            except Exception as e:
+                print(f"Chroma collection loading error: {e}")
 
-    documents = [build_restaurant_document(row, Document) for _, row in df.iterrows()]
-
-    if REBUILD_INDEX:
+        # Build Index from CSV if collection doesn't exist
+        print(f"Building fresh vector index from {CSV_PATH}...")
+        needed_cols = set(COLUMN_MAP.values())
+        
         try:
-            chroma_client.delete_collection(COLLECTION_NAME)
+            df = pd.read_csv(
+                CSV_PATH, 
+                compression='gzip' if CSV_PATH.endswith('.gz') else None,
+                usecols=lambda c: c in needed_cols
+            )
         except Exception:
-            pass
+            df = pd.read_csv(CSV_PATH)
 
-    chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
-    vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-    storage_context = StorageContext.from_defaults(vector_store=vector_store)
+        if SAMPLE_SIZE and len(df) > SAMPLE_SIZE:
+            df = df.sample(n=SAMPLE_SIZE, random_state=42).reset_index(drop=True)
 
-    splitter = SentenceSplitter(chunk_size=400, chunk_overlap=60)
-    index = VectorStoreIndex.from_documents(
-        documents,
-        storage_context=storage_context,
-        transformations=[splitter],
-        show_progress=True,
-    )
-    return index
+        name_col = COLUMN_MAP["name"]
+        if name_col in df.columns:
+            df = df.dropna(subset=[name_col]).reset_index(drop=True)
+
+        documents = [build_restaurant_document(row, Document) for _, row in df.iterrows()]
+
+        chroma_collection = chroma_client.get_or_create_collection(COLLECTION_NAME)
+        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
+        storage_context = StorageContext.from_defaults(vector_store=vector_store)
+
+        splitter = SentenceSplitter(chunk_size=400, chunk_overlap=60)
+        index = VectorStoreIndex.from_documents(
+            documents,
+            storage_context=storage_context,
+            transformations=[splitter],
+            show_progress=False,
+        )
+        return index
+
+    except Exception as e:
+        print(f"CRITICAL ERROR in build_index: {e}")
+        return None
 
 
 if __name__ == "__main__":
