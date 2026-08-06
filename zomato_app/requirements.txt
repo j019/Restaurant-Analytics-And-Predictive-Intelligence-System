@@ -6,8 +6,7 @@ numpy>=1.26.0
 joblib>=1.4.0
 python-dotenv>=1.0.0
 llama-index-core
-llama-index-embeddings-huggingface
+fastembed
+llama-index-embeddings-fastembed
 llama-index-llms-openai-like
-llama-index-llms-groq
 chromadb
-requests
