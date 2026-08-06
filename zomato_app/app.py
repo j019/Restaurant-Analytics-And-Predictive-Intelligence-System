@@ -15,24 +15,33 @@ from src.model_utils import (
 
 app = Flask(__name__)
 
-# --- Load Models & Categories on Startup ---
+# --- Load ML Models & Categories on Startup ---
 regression_model = load_model()
 classification_model = load_classification_model()
 categories = load_categories()
 
-# --- Initialize RAG Index & Chat Engine ---
+# --- Lazy Initialized RAG Chat Engine ---
+# Initialized on demand to prevent Gunicorn memory spike during boot
 chat_engine = None
-try:
-    from src.RAG_V3 import build_index
-    rag_index = build_index()
-    if rag_index:
-        chat_engine = rag_index.as_chat_engine(
-            chat_mode="condense_plus_context",
-            similarity_top_k=3,
-            temperature=0.4,
-        )
-except Exception as e:
-    print(f"Warning: RAG Chat Engine could not be initialized: {e}")
+
+def get_chat_engine():
+    global chat_engine
+    if chat_engine is None:
+        try:
+            print("Initializing RAG Chat Engine lazily...")
+            from src.RAG_V3 import build_index, SYSTEM_PROMPT
+            rag_index = build_index()
+            if rag_index:
+                chat_engine = rag_index.as_chat_engine(
+                    chat_mode="condense_plus_context",
+                    similarity_top_k=3,
+                    system_prompt=SYSTEM_PROMPT,
+                    temperature=0.4,
+                )
+        except Exception as e:
+            print(f"Warning: RAG Chat Engine lazy initialization failed: {e}")
+            chat_engine = None
+    return chat_engine
 
 
 # --- Routes ---
@@ -117,7 +126,8 @@ def handle_classification():
 
 @app.route("/api/rag/chat", methods=["POST"])
 def handle_rag_chat():
-    if chat_engine is None:
+    engine = get_chat_engine()
+    if engine is None:
         return jsonify({
             "status": "error",
             "message": "RAG Chatbot is currently offline or GROQ_API_KEY is not set."
@@ -130,7 +140,7 @@ def handle_rag_chat():
         return jsonify({"status": "error", "message": "Empty query."}), 400
 
     try:
-        response = chat_engine.chat(user_message)
+        response = engine.chat(user_message)
         return jsonify({
             "status": "success",
             "response": str(response)
