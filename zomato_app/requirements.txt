@@ -8,4 +8,6 @@ python-dotenv>=1.0.0
 llama-index-core
 llama-index-embeddings-huggingface
 llama-index-llms-openai-like
+llama-index-llms-groq
 chromadb
+requests
