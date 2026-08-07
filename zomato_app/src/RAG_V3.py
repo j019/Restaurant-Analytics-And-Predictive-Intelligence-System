@@ -1,10 +1,9 @@
 """
 Zomato RAG Chatbot — Refactored CSV-driven Pipeline (Cloud Memory-Optimized)
 =============================================================================
-- Low RAM Footprint: Imports heavy libraries (Pandas, Chroma, FastEmbed) inside 
-  functions to keep idle startup RAM under 100 MB for Render Free Tier.
-- FastEmbed Integration: Eliminates PyTorch memory overhead.
-- Narrative Document Builder: Constructs human-readable narrative sentences.
+- Low RAM Footprint: Utilizes FastEmbed (ONNX Runtime) to avoid PyTorch RAM spikes.
+- Efficient Disk Persistence: Uses pre-indexed Chroma DB storage on disk.
+- Render Free Tier Compatible: Keeps RAM footprint under 250 MB during operation.
 """
 
 import os
@@ -28,15 +27,15 @@ CSV_PATH = str(DATA_DIR / "restaurant_reviews_enriched_imputed.csv.gz")
 CHROMA_PATH = str(SCRIPT_DIR / "chroma_storage")
 COLLECTION_NAME = "zomato_rag"
 
-# Auto-download from GitHub Release if missing
+# Auto-download dataset from GitHub Releases if missing
 if not os.path.exists(CSV_PATH):
     print("Downloading dataset from GitHub Releases...")
     DOWNLOAD_URL = "https://github.com/AshishNalawade0188/Restaurant-Analytics-Predictive-Intelligence-System/releases/download/v1.0.0/restaurant_reviews_enriched_imputed.csv.gz"
     urllib.request.urlretrieve(DOWNLOAD_URL, CSV_PATH)
     print("Dataset download complete!")
 
-# Sample size limit for RAM conservation
-SAMPLE_SIZE = 5000
+# Sample size limit for RAM conservation during initial build
+SAMPLE_SIZE = 3000
 REBUILD_INDEX = False
 
 # System Prompt Definition
@@ -134,14 +133,13 @@ def build_restaurant_document(row, Document_cls) -> object:
 # LAZY INDEX BUILDER
 # ---------------------------------------------------------------------------
 def build_index():
-    """Builds or loads the vector index dynamically with lazy imports."""
-    import pandas as pd
+    """Builds or loads the vector index dynamically with lightweight imports."""
     import chromadb
     from llama_index.core import Document, VectorStoreIndex, Settings, StorageContext
     from llama_index.vector_stores.chroma import ChromaVectorStore
     from llama_index.core.node_parser import SentenceSplitter
     from llama_index.llms.openai_like import OpenAILike
-    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+    from llama_index.embeddings.fastembed import FastEmbedEmbedding
 
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     if not GROQ_API_KEY:
@@ -149,11 +147,12 @@ def build_index():
         return None
 
     try:
-        # Lightweight embedding configuration
-        Settings.embed_model = HuggingFaceEmbedding(
+        # FastEmbed uses ONNX runtime (~100MB RAM vs PyTorch ~800MB RAM)
+        Settings.embed_model = FastEmbedEmbedding(
             model_name="BAAI/bge-small-en-v1.5",
-            embed_batch_size=16,
+            max_length=512
         )
+        
         Settings.llm = OpenAILike(
             model="llama-3.1-8b-instant",
             api_base="https://api.groq.com/openai/v1",
@@ -165,7 +164,7 @@ def build_index():
 
         chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
 
-        # Return existing index if available
+        # 1. Load Existing Index if Persistent Directory Exists
         if not REBUILD_INDEX:
             try:
                 chroma_collection = chroma_client.get_collection(COLLECTION_NAME)
@@ -174,9 +173,10 @@ def build_index():
                     vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
                     return VectorStoreIndex.from_vector_store(vector_store)
             except Exception as e:
-                print(f"Chroma collection loading error: {e}")
+                print(f"Chroma collection not found, building new index: {e}")
 
-        # Build Index from CSV if collection doesn't exist
+        # 2. Build Index from CSV if storage is empty
+        import pandas as pd
         print(f"Building fresh vector index from {CSV_PATH}...")
         needed_cols = set(COLUMN_MAP.values())
         
@@ -202,13 +202,14 @@ def build_index():
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-        splitter = SentenceSplitter(chunk_size=400, chunk_overlap=60)
+        splitter = SentenceSplitter(chunk_size=350, chunk_overlap=30)
         index = VectorStoreIndex.from_documents(
             documents,
             storage_context=storage_context,
             transformations=[splitter],
             show_progress=False,
         )
+        print("Vector index built successfully!")
         return index
 
     except Exception as e:
